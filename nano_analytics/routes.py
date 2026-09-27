@@ -82,6 +82,36 @@ _RESP_CACHE: dict[str, tuple[float, object]] = {}
 _CACHE_LOCK = threading.Lock()
 
 
+def _invalidate_events_cache(site: str = "") -> None:
+    """Invalidate cached responses for events API endpoints for a given site.
+    
+    Called after writing new events to ensure subsequent reads reflect fresh data.
+    If site is provided, only invalidate keys matching that site (via query string).
+    """
+    with _CACHE_LOCK:
+        events_endpoints = {
+            'event_names', 'event_stats', 'event_timeseries', 
+            'event_funnels', 'event_props'
+        }
+        keys_to_delete = []
+        for key in _RESP_CACHE:
+            # key format: "function_name:query_string"
+            if ':' in key:
+                fn_name = key.split(':')[0]
+                if fn_name in events_endpoints:
+                    # If site provided, only delete if query string matches site
+                    if site:
+                        query = key.split(':', 1)[1]
+                        if f"site={site}" in query or f"site={site.replace('.', '%2E')}" in query:
+                            keys_to_delete.append(key)
+                    else:
+                        keys_to_delete.append(key)
+        for k in keys_to_delete:
+            del _RESP_CACHE[k]
+        if keys_to_delete:
+            current_app.logger.info(f"Invalidated {len(keys_to_delete)} events cache entries" + (f" for site={site}" if site else ""))
+
+
 def _cache_ttl(end: int | None) -> int:
     today_start = int(time.time() // 86400 * 86400)  # UTC midnight today
     if end and end < today_start:
@@ -280,6 +310,7 @@ def event():
             (ts, site, session, path, name, jsonify(props).get_data(as_text=True), ua, country, bot),
         )
         db.commit()
+        _invalidate_events_cache(site)
 
     return jsonify({"status": "ok"})
 
